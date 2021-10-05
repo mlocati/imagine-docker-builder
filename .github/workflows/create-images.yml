@@ -38,6 +38,19 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - inspect
+    env:
+      # The version of git to be installed if the default one is too old - see https://github.com/git/git/releases
+      GIT_VERSION: 2.33.0
+      # The version of libaom to be installed - see https://aomedia.googlesource.com/aom/+refs
+      LIBAOM_VERSION: 3.1.2
+      # The version of libdav1d to be installed - see https://code.videolan.org/videolan/dav1d/-/tags
+      LIBDAV1D_VERSION: 0.9.2
+      # The version of libavif to be installed - see https://github.com/AOMediaCodec/libavif/tags
+      LIBAVIF_VERSION: 0.9.2
+      # The version of libde265 to be installed - see https://github.com/strukturag/libde265/releases
+      LIBDE265_VERSION: 1.0.8
+      # The version of libheif to be installed - see # https://github.com/strukturag/libheif/releases
+      LIBHEIF_VERSION: 1.12.0
     strategy:
       matrix:
         php-version:
@@ -51,9 +64,11 @@ jobs:
           - "8.0"
           - "8.1"
     steps:
-      - name: Checkout
+      -
+        name: Checkout
         uses: actions/checkout@v2
-      - name: Build image
+      -
+        name: Create initial image
         run: |
           PHP_VERSION_DOCKERSUFFIX=''
           if [ "${{ matrix.php-version }}" = '8.1' ]; then
@@ -62,28 +77,79 @@ jobs:
           docker build \
             --build-arg "PHP_VERSION=${{ matrix.php-version }}" \
             --build-arg "PHP_VERSION_DOCKERSUFFIX=$PHP_VERSION_DOCKERSUFFIX" \
-            --tag "ghcr.io/php-imagine/test:${{ matrix.php-version }}-base" \
+            --tag "ghcr.io/php-imagine/test:${{ matrix.php-version }}-base-initial" \
             --force-rm --rm \
             --file ./docker/Dockerfile.base \
             ./docker
-      - name: Save image
+      -
+        name: Create container
+        run: docker create -t --name imagine-test-base "ghcr.io/php-imagine/test:${{ matrix.php-version }}-base-initial" bash
+      -
+        name: Start container
+        run: docker start imagine-test-base
+      -
+        name: Update apt cache
+        run: docker exec -t imagine-test-base apt-get update -q
+      -
+        name: Update apt packages
+        run: docker exec -t imagine-test-base apt-get upgrade -qy
+      -
+        name: Install git
+        run: docker exec -t imagine-test-base /installer.sh git $GIT_VERSION
+      -
+        name: Install libaom ${{ env.LIBAOM_VERSION }}
+        run: docker exec -t imagine-test-base /installer.sh libaom $LIBAOM_VERSION
+      -
+        name: Install libdav1d ${{ env.LIBDAV1D_VERSION }}
+        run: docker exec -t imagine-test-base /installer.sh libdav1d $LIBDAV1D_VERSION
+      -
+        name: Install libyuv
+        run: docker exec -t imagine-test-base /installer.sh libyuv
+      -
+        name: Install libavif ${{ env.LIBAVIF_VERSION }}
+        run: docker exec -t imagine-test-base /installer.sh libavif $LIBAVIF_VERSION
+      -
+        name: Install libde265 ${{ env.LIBDE265_VERSION }}
+        run: docker exec -t imagine-test-base /installer.sh libde265 $LIBDE265_VERSION
+      -
+        name: Install libheif ${{ env.LIBHEIF_VERSION }}
+        run: docker exec -t imagine-test-base /installer.sh libheif $LIBHEIF_VERSION
+      -
+        name: Install Composer
+        run: docker exec -t imagine-test-base IPE_KEEP_SYSPKG_CACHE=1 install-php-extensions @composer-2
+      -
+        name: Install exif PHP extension
+        run: docker exec -t imagine-test-base IPE_KEEP_SYSPKG_CACHE=1 install-php-extensions exif
+      -
+        name: Cleanup
+        run: docker exec -t imagine-test-base /installer.sh cleanup
+      -
+        name: Stop container
+        run: docker stop imagine-test-base
+      -
+        name: Create base image
+        run: docker commit imagine-test-base "ghcr.io/php-imagine/test:${{ matrix.php-version }}-base"
+      -
+        name: Save image
         if: needs.inspect.outputs.publish == 'no'
-        run: |
-          docker save "ghcr.io/php-imagine/test:${{ matrix.php-version }}-base" | gzip >"/tmp/base-image-${{ matrix.php-version }}.tgz"
-      - name: Upload image
+        run: docker save "ghcr.io/php-imagine/test:${{ matrix.php-version }}-base" | gzip >"/tmp/base-image-${{ matrix.php-version }}.tgz"
+      -
+        name: Upload image
         if: needs.inspect.outputs.publish == 'no'
         uses: actions/upload-artifact@v2
         with:
           name: base-image-${{ matrix.php-version }}
           path: /tmp/base-image-${{ matrix.php-version }}.tgz
-      - name: Login to the container registry
+      -
+        name: Login to the container registry
         if: needs.inspect.outputs.publish == 'yes'
         uses: docker/login-action@v1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload image to the container registry
+      -
+        name: Upload image to the container registry
         if: needs.inspect.outputs.publish == 'yes'
         run: docker push "ghcr.io/php-imagine/test:${{ matrix.php-version }}-base"
 
@@ -96,6 +162,8 @@ jobs:
     strategy:
       matrix:
         config:
+          # GraphicsMagic versions: http://www.graphicsmagick.org/NEWS.html
+          # ImageMagick versions: https://www.imagemagick.org/download/releases
           - php-version: "5.5"
             graphicsmagic-version: "1.3.23"
             imagemagick-version: "6.8.9-10"
@@ -127,34 +195,67 @@ jobs:
           - "gd-gmagick"
           - "gd-imagick"
     steps:
-      - name: Checkout
+      -
+        name: Checkout
         uses: actions/checkout@v2
-      - name: Download base image
+      -
+        name: Download base image
         if: needs.inspect.outputs.publish == 'no'
         uses: actions/download-artifact@v2
         with:
           name: base-image-${{ matrix.config.php-version }}
           path: /tmp/
-      - name: Load base image
+      -
+        name: Load base image
         if: needs.inspect.outputs.publish == 'no'
         run: docker load --input /tmp/base-image-${{ matrix.config.php-version }}.tgz
-      - name: Build image
-        run: |
-          docker build \
-            --build-arg "PHP_VERSION=${{ matrix.config.php-version }}" \
-            --build-arg "GRAPHICSMAGIC_VERSION=${{ matrix.config.graphicsmagic-version }}" \
-            --build-arg "IMAGEMAGICK_VERSION=${{ matrix.config.imagemagick-version }}" \
-            --build-arg "EXTENSIONS=${{ matrix.extensions }}" \
-            --tag "ghcr.io/php-imagine/test:${{ matrix.config.php-version }}-${{ matrix.extensions }}" \
-            --file ./docker/Dockerfile.build \
-            ./docker
-      - name: Login to the container registry
+      -
+        name: Create container
+        run: docker create -t --name imagine-test "ghcr.io/php-imagine/test:${{ matrix.config.php-version }}-base" bash
+      -
+        name: Start container
+        run: docker start imagine-test
+      -
+        name: Update apt cache
+        run: docker exec -t imagine-test apt-get update -q
+      -
+        name: Install GraphicsMagic
+        if: ${{ contains(matrix.extensions, 'gmagick' }}
+        run: docker exec -t imagine-test /installer.sh graphicsmagick ${{ matrix.config.graphicsmagic-version }}
+      -
+        name: Install gmagick PHP extension
+        if: ${{ contains(matrix.extensions, 'gmagick' }}
+        run: docker exec -t imagine-test IPE_KEEP_SYSPKG_CACHE=1 install-php-extensions gmagick
+      -
+        name: Install ImageMagick
+        if: ${{ contains(matrix.extensions, 'imagick' }}
+        run: docker exec -t imagine-test /installer.sh graphicsmagick ${{ matrix.config.imagemagick-version }}
+      -
+        name: Install imagick PHP extension
+        if: ${{ contains(matrix.extensions, 'imagick' }}
+        run: docker exec -t imagine-test IPE_KEEP_SYSPKG_CACHE=1 install-php-extensions imagick
+      -
+        name: Install gd PHP extension
+        if: ${{ contains(matrix.extensions, 'gd' }}
+        run: docker exec -t imagine-test-base IPE_KEEP_SYSPKG_CACHE=1 install-php-extensions gd
+      -
+        name: Final cleanup
+        run: docker exec -t imagine-test /installer.sh final-cleanup
+      -
+        name: Stop container
+        run: docker stop imagine-test
+      -
+        name: Create image
+        run: docker commit imagine-test "ghcr.io/php-imagine/test:${{ matrix.php-version }}--{{ matrix.extensions }}"
+      -
+        name: Login to the container registry
         if: needs.inspect.outputs.publish == 'yes'
         uses: docker/login-action@v1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload image to the container registry
+      -
+        name: Upload image to the container registry
         if: needs.inspect.outputs.publish == 'yes'
         run: docker push "ghcr.io/php-imagine/test:${{ matrix.config.php-version }}-${{ matrix.extensions }}"
